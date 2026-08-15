@@ -1,5 +1,5 @@
 /**
- * Hermes Bot Mode — a "one chat per agent" roster for the Hermes desktop.
+ * STARK Bots — visual-only Hermes profile roster for Romeu Santiago.
  *
  * Left pane "Bots": one row per Hermes profile (a bot = an agent profile) with
  * a customizable avatar (shape + color + eyes, image, or pet). Click opens that
@@ -54,7 +54,7 @@ import {
   useQuery,
   useValue
 } from '@hermes/plugin-sdk'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const ID = 'hermes-bots'
@@ -62,8 +62,44 @@ const ROSTER_KEY = [ID, 'roster']
 const ROUTINES_KEY = [ID, 'routines']
 const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 
+// STARK pilot: keep the profile roster and visual customization while
+// disabling lateral orchestration, scheduled execution, and profile creation.
+const STARK_PILOT = true
+const STARK_PILOT_BUILD = '2026.08-pilot.6'
+
+const STARK_BOT_META = {
+  default: { title: 'Jarvis', color: '#dc2626', shape: 'hexagon' },
+  automation: { title: 'Dédalo · Automação', color: '#7c3aed', shape: 'squircle' },
+  business: { title: 'Njord · Negócios', color: '#f59e0b', shape: 'pill' },
+  clickup: { title: 'Atlas · ClickUp', color: '#7b68ee', shape: 'circle' },
+  content: { title: 'Bragi · Conteúdo', color: '#ec4899', shape: 'cloud' },
+  crm: { title: 'Hathor · CRM', color: '#2563eb', shape: 'pill' },
+  dev: { title: 'Hefesto · Desenvolvimento', color: '#10b981', shape: 'hexagon' },
+  ops: { title: 'Heimdall · Operações', color: '#64748b', shape: 'triangle' },
+  pm: { title: 'Atena · Produto', color: '#8b5cf6', shape: 'squircle' },
+  process: { title: 'Seshat · Processos', color: '#0ea5e9', shape: 'drop' },
+  qa: { title: "Ma'at · Qualidade", color: '#22c55e', shape: 'circle' },
+  research: { title: 'Thoth · Pesquisa', color: '#06b6d4', shape: 'triangle' },
+  secondbrain: { title: 'Mnemosine · Segundo Cérebro', color: '#d946ef', shape: 'cloud' },
+  study: { title: 'Quíron · Estudos', color: '#f97316', shape: 'drop' }
+}
+
 /** Captured in register() so components can reach plugin storage. */
 let pluginCtx = null
+
+function recordRosterStatus(roster) {
+  if (!Array.isArray(roster)) {
+    return
+  }
+
+  try {
+    Promise.resolve(
+      pluginCtx?.storage?.set?.(`roster-status-${roster.length}`, { loaded: true, profiles: roster.length })
+    ).catch(() => undefined)
+  } catch {
+    /* storage unavailable — roster rendering continues */
+  }
+}
 
 /** Live roster snapshot for imperative handlers (context menus). */
 const $lastRoster = atom([])
@@ -119,7 +155,7 @@ const $selectedBot = atom('default')
 
 /** Per-bot appearance + display meta, persisted via ctx.storage:
  *  { [botName]: { shape, color, title } } */
-const $botMeta = atom({})
+const $botMeta = atom(STARK_PILOT ? STARK_BOT_META : {})
 
 function saveBotMeta(name, patch) {
   const next = { ...$botMeta.get(), [name]: { ...($botMeta.get()[name] || {}), ...patch } }
@@ -140,7 +176,7 @@ function saveBotMeta(name, patch) {
   // instead (profiles.set_asset), which is server-side and uncapped by the
   // list call — so pfps follow the profile across machines too.
   try {
-    const { image, pet, ...rest } = next[name] || {}
+    const { image, pet, _avatar_loaded_revision, ...rest } = next[name] || {}
     host
       .request('profiles.configure', { name, ui_meta: { 'hermes-bots': rest } })
       .catch(() => undefined)
@@ -166,90 +202,17 @@ function saveBotMeta(name, patch) {
  *  local cache doesn't already have an image for them. Fire-and-forget. */
 const avatarFetchInflight = new Set()
 
-const avatarPushInflight = new Set()
-
-/** Backfill: local meta has art the server lacks -> profiles.set_asset.
- *  Server-side avatars power the inter-agent notice pfp (core #85855) and
- *  cross-machine roster art, so local-only images are a bug, not a state. */
-function pushLocalAvatars(roster) {
-  for (const bot of roster) {
-    if (bot.has_avatar || avatarPushInflight.has(bot.name)) {
-      continue
-    }
-
-    const image = $botMeta.get()[bot.name]?.image
-
-    if (image && typeof image === 'string' && image.startsWith('data:')) {
-      avatarPushInflight.add(bot.name)
-      host
-        .request('profiles.set_asset', { name: bot.name, asset: 'avatar', data: image })
-        .then(() => queryClient.invalidateQueries({ queryKey: ['hermes-bots', 'roster'] }))
-        .catch(() => avatarPushInflight.delete(bot.name))
-      continue
-    }
-
-    // Vector shape/color face: no image exists anywhere — rasterize the
-    // live SVG (tagged data-bot-face) to a PNG and push that, so the
-    // inter-agent notices (core #85855/#85888) can show the real pfp.
-    const svg = document.querySelector('svg[data-bot-face=' + JSON.stringify(bot.name) + ']')
-
-    if (!svg) {
-      continue
-    }
-
-    avatarPushInflight.add(bot.name)
-    rasterizeSvgToPng(svg, 160)
-      .then(png =>
-        png
-          ? host
-              .request('profiles.set_asset', { name: bot.name, asset: 'avatar', data: png })
-              .then(() => queryClient.invalidateQueries({ queryKey: ['hermes-bots', 'roster'] }))
-          : Promise.reject(new Error('rasterize failed'))
-      )
-      .catch(() => avatarPushInflight.delete(bot.name))
-  }
-}
-
-/** Serialize an inline SVG and draw it to a canvas -> PNG data URL. */
-function rasterizeSvgToPng(svgEl, size) {
-  return new Promise(resolve => {
-    try {
-      const clone = svgEl.cloneNode(true)
-      clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
-      clone.setAttribute('width', String(size))
-      clone.setAttribute('height', String(size))
-      const markup = new XMLSerializer().serializeToString(clone)
-      const url = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(markup)
-      const img = new Image()
-
-      img.onload = () => {
-        try {
-          const canvas = document.createElement('canvas')
-          canvas.width = size
-          canvas.height = size
-          canvas.getContext('2d').drawImage(img, 0, 0, size, size)
-          resolve(canvas.toDataURL('image/png'))
-        } catch {
-          resolve(null)
-        }
-      }
-      img.onerror = () => resolve(null)
-      img.src = url
-    } catch {
-      resolve(null)
-    }
-  })
-}
-
 function pullServerAvatars(roster) {
-  pushLocalAvatars(roster)
-
   for (const bot of roster) {
     if (!bot.has_avatar || avatarFetchInflight.has(bot.name)) {
       continue
     }
 
-    if ($botMeta.get()[bot.name]?.image) {
+    const localMeta = $botMeta.get()[bot.name] || {}
+    const serverMeta = bot.ui_meta?.['hermes-bots'] || {}
+    const avatarRevision = serverMeta.avatar_revision || ''
+
+    if (localMeta.image && (!avatarRevision || localMeta._avatar_loaded_revision === avatarRevision)) {
       continue
     }
 
@@ -259,7 +222,14 @@ function pullServerAvatars(roster) {
       .then(res => {
         if (res?.found && res.data) {
           const current = $botMeta.get()
-          $botMeta.set({ ...current, [bot.name]: { ...(current[bot.name] || {}), image: res.data } })
+          $botMeta.set({
+            ...current,
+            [bot.name]: {
+              ...(current[bot.name] || {}),
+              image: res.data,
+              _avatar_loaded_revision: avatarRevision
+            }
+          })
 
           try {
             Promise.resolve(pluginCtx?.storage?.set?.('bot-meta', $botMeta.get())).catch(() => undefined)
@@ -351,18 +321,6 @@ async function duplicateBot(bot, roster) {
 // The original flat shapes. Sigils ('sigil-N') and platonic
 // solids remain render-only so any bot that picked one during the experiments
 // keeps its look.
-// Radix ScrollArea's viewport wraps children in a display:table div that
-// sizes to content — unbounded width means `truncate` below it never fires
-// and previews run through the panel edge. Scope-limited corrective.
-if (typeof document !== 'undefined' && !document.getElementById('hermes-bots-roster-css')) {
-  const style = document.createElement('style')
-  style.id = 'hermes-bots-roster-css'
-  style.textContent =
-    '.hermes-bots-roster [data-radix-scroll-area-viewport] > div {' +
-    ' display: block !important; width: 100%; min-width: 0; }'
-  document.head.appendChild(style)
-}
-
 const AVATAR_SHAPES = ['circle', 'squircle', 'pill', 'triangle', 'hexagon', 'cloud', 'drop']
 
 /** xorshift PRNG seeded from a string — stable across sessions/platforms. */
@@ -575,9 +533,6 @@ const EYE_X = {
  * left-right), 'error' (X X). Eyes flip light-on-dark for ink/oxblood bodies.
  */
 function BotFace({ shape, color, image, size = 36, name = 'agent', mood = 'idle' }) {
-  // data-bot-face lets the avatar backfill locate this bot's rendered SVG
-  // in the DOM to rasterize it for the server asset store (vector shape
-  // avatars have no image file anywhere otherwise).
   const [blink, setBlink] = useState(false)
   const [scanX, setScanX] = useState(0)
 
@@ -658,7 +613,6 @@ function BotFace({ shape, color, image, size = 36, name = 'agent', mood = 'idle'
           })
 
   return jsxs('svg', {
-    'data-bot-face': name,
     viewBox: '0 0 40 40',
     width: size,
     height: size,
@@ -667,221 +621,7 @@ function BotFace({ shape, color, image, size = 36, name = 'agent', mood = 'idle'
   })
 }
 
-// -- inline MCP setup (per-profile), driven by the mcp.servers.* gateway RPCs --
-// Feature-detected: if the gateway predates those RPCs the setup button hides
-// and the row falls back to the "run hermes mcp / Settings" hint. profile is
-// the target bot's profile name (its config is what we write).
-
-async function mcpRpc(method, params) {
-  // Returns { ok, result } or { ok:false, unsupported:true } when the gateway
-  // doesn't know the method (older backend) vs a real error.
-  try {
-    const res = await host.request(method, params)
-    return { ok: true, result: res }
-  } catch (err) {
-    const msg = String((err && err.message) || err || '')
-    if (/unknown method/i.test(msg)) {
-      return { ok: false, unsupported: true }
-    }
-    return { ok: false, error: msg }
-  }
-}
-
-// Probe whether the new lifecycle RPCs exist on this gateway (cached per session).
-let _mcpRpcSupported = null
-async function mcpSetupSupported() {
-  if (_mcpRpcSupported !== null) {
-    return _mcpRpcSupported
-  }
-  const r = await mcpRpc('mcp.servers.list', {})
-  _mcpRpcSupported = !(r.ok === false && r.unsupported)
-  return _mcpRpcSupported
-}
-
-function McpSetupButton({ profile, entry, onDone }) {
-  // entry: { name, requires:[env keys], auth?, fromCatalog, installed }
-  const [phase, setPhase] = useState('idle') // idle | keys | oauth | busy | done | error
-  const [supported, setSupported] = useState(null)
-  const [keyValues, setKeyValues] = useState({})
-  const [message, setMessage] = useState('')
-  const pollRef = useRef(null)
-
-  useEffect(() => {
-    let alive = true
-    mcpSetupSupported().then(ok => {
-      if (alive) setSupported(ok)
-    })
-    return () => {
-      alive = false
-      if (pollRef.current) {
-        clearInterval(pollRef.current)
-        pollRef.current = null
-      }
-    }
-  }, [])
-
-  const isOAuth = (entry.auth || '').toLowerCase() === 'oauth'
-  const requires = entry.requires || []
-
-  const beginKeys = async () => {
-    // Ensure the server exists in the target profile first (add from catalog).
-    setPhase('busy')
-    setMessage('')
-    if (entry.fromCatalog && !entry.installed) {
-      const add = await mcpRpc('mcp.servers.add', { profile, name: entry.name, preset: entry.name })
-      if (!add.ok) {
-        setPhase('error')
-        setMessage(add.error || 'Could not add server')
-        return
-      }
-    }
-    setPhase(isOAuth ? 'oauth' : 'keys')
-  }
-
-  const submitKeys = async () => {
-    setPhase('busy')
-    for (const k of requires) {
-      const val = (keyValues[k] || '').trim()
-      if (!val) {
-        continue
-      }
-      const r = await mcpRpc('mcp.servers.set_api_key', { profile, name: entry.name, env_var: k, value: val })
-      if (!r.ok) {
-        setPhase('error')
-        setMessage(r.error || ('Failed to set ' + k))
-        return
-      }
-    }
-    // Verify via test.
-    const t = await mcpRpc('mcp.servers.test', { profile, name: entry.name })
-    if (t.ok && t.result && (t.result.ok || (t.result.result && t.result.result.ok))) {
-      setPhase('done')
-      host.notify({ kind: 'success', message: entry.name + ' configured' })
-      onDone && onDone()
-    } else {
-      setPhase('error')
-      setMessage((t.result && (t.result.error || (t.result.result && t.result.result.error))) || 'Server test failed after setup')
-    }
-  }
-
-  const beginOAuth = async () => {
-    setPhase('busy')
-    setMessage('')
-    if (entry.fromCatalog && !entry.installed) {
-      const add = await mcpRpc('mcp.servers.add', { profile, name: entry.name, preset: entry.name })
-      if (!add.ok) {
-        setPhase('error')
-        setMessage(add.error || 'Could not add server')
-        return
-      }
-    }
-    const start = await mcpRpc('mcp.servers.oauth.start', { profile, name: entry.name })
-    const payload = start.result && (start.result.result || start.result)
-    const authUrl = payload && (payload.auth_url || payload.verification_url)
-    const sessionId = payload && payload.session_id
-    if (!start.ok || !authUrl || !sessionId) {
-      setPhase('error')
-      setMessage((start.error) || 'Could not start OAuth')
-      return
-    }
-    // Open the auth URL in the native browser, same as provider OAuth.
-    try {
-      if (host.openExternal) {
-        host.openExternal(authUrl)
-      } else if (typeof window !== 'undefined' && window.hermesDesktop && window.hermesDesktop.openExternal) {
-        window.hermesDesktop.openExternal(authUrl)
-      } else {
-        window.open(authUrl, '_blank')
-      }
-    } catch {
-      /* fall through to poll; user can open the URL from the toast */
-    }
-    setPhase('oauth')
-    setMessage('Complete sign-in in your browser...')
-    pollRef.current = setInterval(async () => {
-      const poll = await mcpRpc('mcp.servers.oauth.poll', { profile, name: entry.name, session_id: sessionId })
-      const pd = poll.result && (poll.result.result || poll.result)
-      const status = pd && pd.status
-      if (status === 'approved') {
-        clearInterval(pollRef.current)
-        pollRef.current = null
-        setPhase('done')
-        host.notify({ kind: 'success', message: entry.name + ' authenticated' })
-        onDone && onDone()
-      } else if (status === 'error') {
-        clearInterval(pollRef.current)
-        pollRef.current = null
-        setPhase('error')
-        setMessage((pd && pd.error_message) || 'OAuth failed')
-      }
-    }, 2000)
-  }
-
-  if (supported === false) {
-    return jsx('span', {
-      className: 'ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)',
-      children: 'needs setup (' + requires.join(', ') + ') \u2014 restart the gateway to enable in-app setup'
-    })
-  }
-  if (phase === 'done') {
-    return jsx('span', { className: 'ml-1.5 text-[0.65rem] text-(--ui-success,#22c55e)', children: 'set up \u2713' })
-  }
-  if (phase === 'keys') {
-    return jsxs('div', {
-      className: 'mt-1 grid gap-1',
-      children: [
-        ...requires.map(k =>
-          jsx(Input, {
-            key: k,
-            type: 'password',
-            className: 'h-6 text-[0.7rem]',
-            placeholder: k,
-            value: keyValues[k] || '',
-            onChange: e => setKeyValues(prev => ({ ...prev, [k]: e.target.value }))
-          }, k)
-        ),
-        jsxs('div', {
-          className: 'flex gap-1',
-          children: [
-            jsx(Button, { size: 'xs', variant: 'secondary', onClick: () => void submitKeys(), children: 'Save & test' }),
-            jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => setPhase('idle'), children: 'Cancel' })
-          ]
-        })
-      ]
-    })
-  }
-  if (phase === 'oauth') {
-    return jsx('span', { className: 'ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)', children: message || 'Authorizing\u2026' })
-  }
-  if (phase === 'busy') {
-    return jsx('span', { className: 'ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)', children: 'Working\u2026' })
-  }
-  if (phase === 'error') {
-    return jsxs('span', {
-      className: 'ml-1.5 text-[0.65rem] text-(--ui-danger,#ef4444)',
-      children: [(message || 'Setup failed') + ' ', jsx('button', { className: 'underline', onClick: () => setPhase('idle'), children: 'retry' })]
-    })
-  }
-  // idle
-  return jsx('button', {
-    className: 'ml-1.5 text-[0.65rem] text-(--ui-accent,#4f9cf9) underline',
-    onClick: () => void (isOAuth ? beginOAuth() : beginKeys()),
-    children: isOAuth ? 'Sign in\u2026' : 'Set up\u2026'
-  })
-}
-
 function botAppearance(name, meta) {
-  // The primary profile is literally named "default"; the SDK's profileColor
-  // can hand it a near-black that renders as an ugly black square, and any
-  // auto-seeded color in local bot-meta would otherwise stick. Give the
-  // primary a nice fixed generic look (a friendly violet squircle). A user's
-  // EXPLICIT customization still wins: an uploaded/generated/pet image, or a
-  // shape/color they set via the editor (tracked by meta.custom === true).
-  const isPrimary = (name || '').trim().toLowerCase() === 'default'
-  const userCustomized = Boolean(meta?.custom)
-  if (isPrimary && !userCustomized) {
-    return { shape: 'squircle', color: '#8b5cf6', image: meta?.image || null }
-  }
   return {
     shape: meta?.shape || defaultShapeFor(name),
     color: meta?.color || profileColor(name),
@@ -1469,10 +1209,7 @@ function showsHandle(name, meta) {
 // mint two canonical chats.
 const canonicalCreations = new Map()
 
-/** Create the bot's ONE forever chat: a real session opened with a kickoff
- *  message (the gateway prunes zero-message sessions, so the chat is born
- *  with the bot introducing itself). Pins the stored id in bot meta and
- *  returns it. */
+/** Create the bot's ONE forever chat for the full upstream mode. */
 function createCanonicalChat(name) {
   const inflight = canonicalCreations.get(name)
 
@@ -1499,7 +1236,7 @@ function createCanonicalChat(name) {
       }
     }
 
-    if (runtime) {
+    if (runtime && !STARK_PILOT) {
       window.setTimeout(() => {
         void host
           .request('prompt.submit', { session_id: runtime, text: 'Hey, tell me about yourself!' })
@@ -1513,6 +1250,79 @@ function createCanonicalChat(name) {
   canonicalCreations.set(name, run)
 
   return run
+}
+
+/** Open a bot without a pinned canonical chat.
+ *
+ * The STARK pilot is navigation-only. It opens an existing session when
+ * possible, otherwise opens an empty draft and waits for the user's message.
+ */
+async function openUnpinnedBot(bot) {
+  if (!STARK_PILOT) {
+    return createCanonicalChat(bot.name)
+  }
+
+  const existingId = bot?.last_session?.id
+
+  if (existingId && typeof host.openSession === 'function') {
+    await host.openSession(existingId, { profile: bot.name })
+    return existingId
+  }
+
+  if (typeof host.newChat === 'function') {
+    host.newChat(bot.name)
+  } else {
+    host.navigate('/')
+  }
+
+  return null
+}
+
+/** Exact BotRow click handler. Selection may read session state, but it must
+ * never submit prompts, mutate profile metadata, or start agent work. */
+async function openBotSelection(bot, meta) {
+  haptic('tap')
+  $selectedBot.set(bot.name)
+
+  if ($botUnread.get()[bot.name]) {
+    const next = { ...$botUnread.get() }
+    delete next[bot.name]
+    $botUnread.set(next)
+  }
+
+  let id = meta?.chat
+
+  if (id) {
+    try {
+      const res = await host.request('session.list', { profile: bot.name, limit: 100 })
+      const rows = res?.sessions ?? []
+
+      if (rows.length && !rows.some(session => session.id === id)) {
+        id = rows[0].id
+      }
+    } catch {
+      // Gateway hiccup — try the pin as-is.
+    }
+  } else {
+    try {
+      return await openUnpinnedBot(bot)
+    } catch {
+      id = null
+    }
+  }
+
+  if (id && typeof host.openSession === 'function') {
+    await host.openSession(id, { profile: bot.name })
+    return id
+  }
+
+  if (typeof host.newChat === 'function') {
+    host.newChat(bot.name)
+  } else {
+    host.navigate('/')
+  }
+
+  return null
 }
 
 function displayName(bot, meta) {
@@ -1555,10 +1365,6 @@ function messagingProtocolSection(name, roster) {
     '',
     '```',
     'hermes -p <agent-name> chat --in ~ -c "Bot Chat" -Q -q "Message from \uD83E\uDD16 ' + name + ' (@' + name + '): your message"',
-    '',
-    'Run the send with background=true and notify_on_complete=true on the',
-    'terminal tool, then finish your turn — the reply arrives later as a',
-    'background process notification. Never block waiting for it.',
     '```',
     '',
     '(`--in ~ -c "Bot Chat"` resumes their canonical conversation in the home',
@@ -1622,59 +1428,13 @@ function BotRow({ bot, onEdit }) {
   const botMood = isActive && gatewayState === 'busy' ? 'work' : 'idle'
   const unread = Boolean(useValue($botUnread)[bot.name])
 
-  const open = async () => {
-    haptic('tap')
-    $selectedBot.set(bot.name)
-
-    if ($botUnread.get()[bot.name]) {
-      const next = { ...$botUnread.get() }
-      delete next[bot.name]
-      $botUnread.set(next)
-    }
-
-    let id = meta?.chat
-
-    if (id) {
-      // Recovery: compaction rewrites lineage ids. If the pin no longer
-      // resolves, follow the lineage to the newest session that CONTINUES
-      // this chat; if the whole lineage is gone, mint a fresh canonical.
-      try {
-        const res = await host.request('session.list', { profile: bot.name, limit: 100 })
-        const rows = res?.sessions ?? []
-
-        if (rows.length && !rows.some(s => s.id === id)) {
-          id = rows[0].id
-          saveBotMeta(bot.name, { chat: id })
-        }
-      } catch {
-        // Gateway hiccup — try the pin as-is.
-      }
-    } else {
-      try {
-        id = await createCanonicalChat(bot.name)
-
-        // createCanonicalChat already opened the fresh session.
-        return
-      } catch {
-        id = null
-      }
-    }
-
-    if (id && typeof host.openSession === 'function') {
-      void host.openSession(id, { profile: bot.name })
-    } else if (typeof host.newChat === 'function') {
-      // Older gateway without profile-scoped session.create — plain draft.
-      host.newChat(bot.name)
-    } else {
-      host.navigate('/')
-    }
-  }
+  const open = () => openBotSelection(bot, meta)
 
   const row = jsxs('button', {
     type: 'button',
     onClick: open,
     className: cn(
-      'flex w-full min-w-0 max-w-full items-center gap-2.5 overflow-hidden rounded-md px-2 py-2 text-left transition-colors',
+      'flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-left transition-colors',
       'hover:bg-(--chrome-action-hover)',
       isActive && 'bg-(--chrome-action-hover)'
     ),
@@ -1692,13 +1452,6 @@ function BotRow({ bot, onEdit }) {
               jsxs('div', {
                 className: 'flex min-w-0 items-baseline gap-1.5 truncate',
                 children: [
-                  meta?.pinned
-                    ? jsx('span', {
-                        className: 'shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)',
-                        title: 'Pinned',
-                        children: '📌'
-                      })
-                    : null,
                   jsx('span', {
                     className: 'truncate text-[0.8125rem] font-medium',
                     children: displayName(bot, meta)
@@ -1740,31 +1493,24 @@ function BotRow({ bot, onEdit }) {
       jsxs(ContextMenuContent, {
         children: [
           jsx(ContextMenuItem, {
-            onSelect: () => {
-              const pinned = Boolean($botMeta.get()[bot.name]?.pinned)
-              saveBotMeta(bot.name, { pinned: !pinned })
-              host.notify({
-                kind: 'info',
-                message: `${displayName(bot, meta)} ${pinned ? 'unpinned' : 'pinned to top'}`
-              })
-            },
-            children: meta?.pinned ? 'Unpin' : 'Pin to top'
+            onSelect: () => onEdit(bot),
+            children: STARK_PILOT ? 'Customize Bot' : 'Edit Profile'
           }),
-          jsx(ContextMenuSeparator, {}),
-          jsx(ContextMenuItem, { onSelect: () => onEdit(bot), children: 'Edit Profile' }),
-          jsx(ContextMenuItem, {
-            onSelect: () => {
-              host.notify({ kind: 'info', message: `Duplicating ${displayName(bot, meta)}…` })
-              duplicateBot(bot, $lastRoster.get())
-                .then(name => {
-                  queryClient.invalidateQueries({ queryKey: ROSTER_KEY })
-                  host.notify({ kind: 'success', message: `Created ${name} — full copy of ${bot.name}` })
-                })
-                .catch(err => host.notifyError(err, 'Duplicate failed'))
-            },
-            children: 'Duplicate'
-          }),
-          jsx(ContextMenuSeparator, {}),
+          STARK_PILOT
+            ? null
+            : jsx(ContextMenuItem, {
+                onSelect: () => {
+                  host.notify({ kind: 'info', message: `Duplicating ${displayName(bot, meta)}…` })
+                  duplicateBot(bot, $lastRoster.get())
+                    .then(name => {
+                      queryClient.invalidateQueries({ queryKey: ROSTER_KEY })
+                      host.notify({ kind: 'success', message: `Created ${name} — full copy of ${bot.name}` })
+                    })
+                    .catch(err => host.notifyError(err, 'Duplicate failed'))
+                },
+                children: 'Duplicate'
+              }),
+          STARK_PILOT ? null : jsx(ContextMenuSeparator, {}),
           jsx(ContextMenuItem, {
             onSelect: () => {
               $selectedBot.set(bot.name)
@@ -1946,14 +1692,9 @@ function AdvancedProfileConfig({ bot, state, setState }) {
 
   if (!loaded) {
     setLoaded(true)
-    Promise.all([
-      host.request('profiles.describe', { name: bot }),
-      host.request('mcp.catalog', { profile: bot }).catch(() => null)
-    ])
-      .then(([res, cat]) => {
-        const configured = res.mcp_servers || []
-        const have = new Set(configured.map(m => m.name))
-        const catalog = ((cat && cat.servers) || []).filter(s => !have.has(s.name))
+    host
+      .request('profiles.describe', { name: bot })
+      .then(res => {
         setState(prev => ({
           ...prev,
           provider: res.model?.provider || '',
@@ -1961,18 +1702,6 @@ function AdvancedProfileConfig({ bot, state, setState }) {
           soul: res.soul || '',
           skills: res.skills || [],
           toolsets: res.toolsets || [],
-          mcp: [
-            ...configured.map(m => ({ ...m, enabled: m.enabled !== false })),
-            ...catalog.map(s => ({
-              name: s.name,
-              enabled: false,
-              fromCatalog: true,
-              installed: s.installed,
-              auth: s.auth,
-              requires: s.requires || [],
-              description: s.description || ''
-            }))
-          ],
           loaded: true
         }))
       })
@@ -2011,17 +1740,8 @@ function AdvancedProfileConfig({ bot, state, setState }) {
       toolsets: prev.toolsets.map(t => (t.name === name ? { ...t, enabled } : t))
     }))
 
-  const toggleMcp = (name, enabled) =>
-    setState(prev => ({
-      ...prev,
-      dirtyMcp: true,
-      mcp: (prev.mcp || []).map(m => (m.name === name ? { ...m, enabled } : m))
-    }))
-
   const enabledSkills = state.skills.filter(s => s.enabled).length
   const enabledToolsets = state.toolsets.filter(t => t.enabled).length
-  const mcpList = state.mcp || []
-  const enabledMcp = mcpList.filter(m => m.enabled).length
 
   return jsxs('div', {
     className: 'grid gap-4',
@@ -2044,15 +1764,6 @@ function AdvancedProfileConfig({ bot, state, setState }) {
             jsx(ScrollArea, {
               style: { maxHeight: 180 },
               children: jsx(CheckList, { items: visibleSkills, onToggle: toggleSkill, columns: 2 })
-            }),
-            jsx(HubSkillsSection, {
-              forProfile: bot,
-              onInstalled: name =>
-                setState(prev =>
-                  prev.skills.some(s => s.name === name)
-                    ? prev
-                    : { ...prev, skills: [...prev.skills, { name, enabled: true }] }
-                )
             })
           ]
         })
@@ -2068,65 +1779,6 @@ function AdvancedProfileConfig({ bot, state, setState }) {
         })
       ),
       labeled(
-        `MCP servers (${enabledMcp}/${mcpList.length} enabled)`,
-        jsx('div', {
-          className: 'rounded-md border border-(--ui-stroke-secondary) p-2',
-          children: mcpList.length === 0
-            ? jsx('div', {
-                className: 'px-1 py-2 text-center text-xs text-(--ui-text-tertiary)',
-                children: 'No MCP servers configured or in the catalog.'
-              })
-            : jsx(ScrollArea, {
-                style: { maxHeight: 180 },
-                children: jsx('div', {
-                  className: 'grid gap-1',
-                  children: mcpList.map(m => {
-                    const needsSetup = m.fromCatalog && !m.installed && ((m.requires || []).length > 0 || (m.auth || '').toLowerCase() === 'oauth')
-                    return jsxs(
-                      'label',
-                      {
-                        className: 'flex items-start gap-2 text-xs text-(--ui-text-secondary)',
-                        children: [
-                          jsx(Checkbox, {
-                            checked: !!m.enabled,
-                            disabled: needsSetup,
-                            onCheckedChange: value => toggleMcp(m.name, Boolean(value))
-                          }),
-                          jsxs('span', {
-                            className: 'min-w-0',
-                            children: [
-                              jsx('span', { children: m.name }),
-                              m.fromCatalog && !needsSetup
-                                ? jsx('span', {
-                                    className: 'ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)',
-                                    children: m.installed ? 'catalog · installed' : 'catalog'
-                                  })
-                                : null,
-                              needsSetup
-                                ? jsx(McpSetupButton, {
-                                    profile: bot,
-                                    entry: m,
-                                    onDone: () => toggleMcp(m.name, true)
-                                  })
-                                : null,
-                              m.description
-                                ? jsx('div', {
-                                    className: 'truncate text-[0.65rem] leading-4 text-(--ui-text-quaternary)',
-                                    children: m.description
-                                  })
-                                : null
-                            ]
-                          })
-                        ]
-                      },
-                      m.name
-                    )
-                  })
-                })
-              })
-        })
-      ),
-      labeled(
         'SOUL.md (persona + agent-messaging protocol)',
         jsx(Textarea, {
           className: 'min-h-28 font-mono text-xs leading-5',
@@ -2134,256 +1786,6 @@ function AdvancedProfileConfig({ bot, state, setState }) {
           onChange: event => setState(prev => ({ ...prev, dirtySoul: true, soul: event.target.value }))
         })
       )
-    ]
-  })
-}
-
-// ── skills hub section: the REAL hub page (docs) embedded as a picker ──────
-// https://hermes-agent.nousresearch.com/docs/skills?embed=picker hides the
-// docs chrome and adds "+ Add to this Agent" per card, posting
-// {type: 'hermes-skill-pick', ...} to us (hermes-agent#86243). We validate
-// the origin, install via skills.manage, and bubble onInstalled so the
-// checklist above gains the row. Search-box fallback kept for offline use.
-
-const HUB_ORIGIN = 'https://hermes-agent.nousresearch.com'
-const HUB_PICKER_URL = HUB_ORIGIN + '/docs/skills?embed=picker'
-
-function HubSkillsSection({ forProfile, onInstalled }) {
-  const [query, setQuery] = useState('')
-  const [results, setResults] = useState(null)
-  const [searching, setSearching] = useState(false)
-  const [installing, setInstalling] = useState(null)
-  const [installed, setInstalled] = useState({})
-  const [browseHub, setBrowseHub] = useState(false)
-  const installRef = useRef(null)
-
-  // Picker messages from the embedded hub page. Origin-checked; installs
-  // route through the same install() the search fallback uses.
-  useEffect(() => {
-    if (!browseHub) {
-      return undefined
-    }
-
-    const onMessage = event => {
-      if (event.origin !== HUB_ORIGIN) {
-        return
-      }
-
-      const data = event.data
-
-      if (!data || data.type !== 'hermes-skill-pick' || !data.name) {
-        return
-      }
-
-      const target = String(data.identifier || data.name)
-
-      if (installRef.current) {
-        void installRef.current(target, String(data.name))
-      }
-    }
-
-    window.addEventListener('message', onMessage)
-
-    return () => window.removeEventListener('message', onMessage)
-  }, [browseHub])
-
-  const search = async () => {
-    const q = query.trim()
-
-    if (!q || searching) {
-      return
-    }
-
-    setSearching(true)
-    setResults(null)
-
-    try {
-      const res = await host.request('skills.manage', { action: 'search', query: q })
-      setResults(res.results || [])
-    } catch {
-      setResults([])
-    } finally {
-      setSearching(false)
-    }
-  }
-
-  const install = async (name, displayName) => {
-    const label = displayName || name
-
-    if (installing) {
-      return
-    }
-
-    setInstalling(label)
-
-    try {
-      // With forProfile the install lands in that bot's skills dir
-      // (gateway skills.manage profile scoping); null = launch profile,
-      // which is right at create time — the new bot clones/copies from it.
-      await host.request('skills.manage', {
-        action: 'install',
-        query: name,
-        ...(forProfile ? { profile: forProfile } : {})
-      })
-      setInstalled(prev => ({ ...prev, [label]: true }))
-      host.notify({ kind: 'success', message: `Skill "${label}" installed` })
-
-      if (typeof onInstalled === 'function') {
-        onInstalled(label)
-      }
-    } catch (err) {
-      host.notifyError(err, `Installing "${label}" failed`)
-    } finally {
-      setInstalling(null)
-    }
-  }
-
-  installRef.current = install
-
-  return jsxs('div', {
-    className: 'grid gap-1.5 border-t border-(--ui-stroke-secondary) pt-2',
-    children: [
-      jsxs('div', {
-        className: 'flex items-baseline justify-between gap-2',
-        children: [
-          jsx('div', {
-            className: 'text-[0.7rem] font-medium text-(--ui-text-secondary)',
-            children: 'Skills Hub'
-          }),
-          jsx('button', {
-            type: 'button',
-            className: 'text-[0.65rem] text-(--ui-text-quaternary) hover:text-(--ui-text-secondary)',
-            onClick: () => setBrowseHub(v => !v),
-            children: browseHub ? 'hide the hub browser' : 'browse the full hub ▾'
-          })
-        ]
-      }),
-      browseHub
-        ? jsxs('div', {
-            className: 'grid gap-1',
-            children: [
-              // Resizable viewport: native CSS resize handle (bottom-right
-              // corner) lets the user drag it larger/smaller. The iframe
-              // inside is rendered oversized and scaled DOWN (133% × 0.75)
-              // so the hub page starts zoomed out — we can't style the
-              // cross-origin page itself, but scaling the frame is ours.
-              jsx('div', {
-                style: {
-                  width: '100%',
-                  height: 560,
-                  minHeight: 240,
-                  minWidth: 320,
-                  maxWidth: '100%',
-                  resize: 'both',
-                  overflow: 'hidden',
-                  border: '1px solid var(--ui-stroke-secondary)',
-                  borderRadius: 8,
-                  position: 'relative'
-                },
-                children: jsx('iframe', {
-                  src: HUB_PICKER_URL,
-                  title: 'Hermes Skills Hub',
-                  style: {
-                    width: '133.34%',
-                    height: '133.34%',
-                    border: 'none',
-                    background: 'transparent',
-                    transform: 'scale(0.75)',
-                    transformOrigin: 'top left'
-                  },
-                  sandbox: 'allow-scripts allow-same-origin'
-                })
-              }),
-              jsx('div', {
-                className: 'px-1 text-[0.65rem] leading-4 text-(--ui-text-quaternary)',
-                children:
-                  installing
-                    ? `Installing "${installing}"…`
-                    : 'Hit "+ Add to this Agent" on any skill — it installs and appears in the list above. Drag the corner to resize.'
-              })
-            ]
-          })
-        : null,
-      jsxs('div', {
-        className: 'flex gap-1.5',
-        children: [
-          jsx(Input, {
-            className: 'h-7 flex-1 text-xs',
-            placeholder: 'Search the hub (community + well-known sources)…',
-            value: query,
-            onChange: event => setQuery(event.target.value),
-            onKeyDown: event => {
-              if (event.key === 'Enter') {
-                event.preventDefault()
-                void search()
-              }
-            }
-          }),
-          jsx(Button, {
-            size: 'sm',
-            variant: 'secondary',
-            disabled: searching || !query.trim(),
-            onClick: () => void search(),
-            children: searching ? 'Searching…' : 'Search'
-          })
-        ]
-      }),
-      searching
-        ? jsx('div', {
-            className: 'px-1 text-[0.65rem] text-(--ui-text-quaternary)',
-            children: 'Searching community + well-known sources — can take ~10s…'
-          })
-        : null,
-      results === null
-        ? null
-        : results.length === 0
-          ? jsx('div', {
-              className: 'px-1 py-1.5 text-[0.7rem] text-(--ui-text-quaternary)',
-              children: 'No hub skills matched.'
-            })
-          : jsx(ScrollArea, {
-              style: { maxHeight: 150 },
-              children: jsx('div', {
-                className: 'grid gap-1',
-                children: results.map(r =>
-                  jsxs(
-                    'div',
-                    {
-                      className: 'flex items-center gap-2 text-xs',
-                      children: [
-                        jsxs('div', {
-                          className: 'min-w-0 flex-1',
-                          children: [
-                            jsx('div', { className: 'truncate font-medium', children: r.name }),
-                            r.description
-                              ? jsx('div', {
-                                  className: 'truncate text-[0.65rem] text-(--ui-text-quaternary)',
-                                  children: r.description
-                                })
-                              : null
-                          ]
-                        }),
-                        installed[r.name]
-                          ? jsx('span', {
-                              className: 'shrink-0 text-[0.65rem] text-(--ui-text-tertiary)',
-                              children: '✓ added'
-                            })
-                          : jsx(Button, {
-                              size: 'sm',
-                              variant: 'ghost',
-                              className: 'shrink-0 px-2 font-semibold',
-                              disabled: installing !== null,
-                              title: `Install "${r.name}" and add it to the list above`,
-                              onClick: () => void install(r.name),
-                              children: installing === r.name ? '…' : '+'
-                            })
-                      ]
-                    },
-                    r.name
-                  )
-                )
-              })
-            })
     ]
   })
 }
@@ -2396,12 +1798,10 @@ function emptyAdvancedState() {
     soul: '',
     skills: [],
     toolsets: [],
-    mcp: [],
     dirtyModel: false,
     dirtySoul: false,
     dirtySkills: false,
-    dirtyToolsets: false,
-    dirtyMcp: false
+    dirtyToolsets: false
   }
 }
 
@@ -2427,10 +1827,6 @@ async function applyAdvancedConfig(bot, state) {
     const enabled = state.toolsets.filter(t => t.enabled)
     // All enabled (or none) = clear the pin; otherwise pin the checked set.
     payload.enabled_toolsets = enabled.length === all || enabled.length === 0 ? [] : enabled.map(t => t.name)
-  }
-
-  if (state.dirtyMcp) {
-    payload.enabled_mcp_servers = (state.mcp || []).filter(m => m.enabled).map(m => m.name)
   }
 
   if (Object.keys(payload).length === 1) {
@@ -2495,10 +1891,10 @@ function EditProfileDialog({ bot, open, onClose }) {
     }
 
     setBusy(true)
-    saveBotMeta(bot.name, { shape, color, image, title: title.trim(), custom: true })
+    saveBotMeta(bot.name, { shape, color, image, title: title.trim() })
 
     const desc = description.trim()
-    if (desc !== (bot.description || '').trim()) {
+    if (!STARK_PILOT && desc !== (bot.description || '').trim()) {
       try {
         await host.request('cli.exec', {
           argv: ['profile', 'describe', bot.name, '--text', desc]
@@ -2509,7 +1905,7 @@ function EditProfileDialog({ bot, open, onClose }) {
       }
     }
 
-    if (adv.loaded && (adv.dirtyModel || adv.dirtySoul || adv.dirtySkills || adv.dirtyToolsets || adv.dirtyMcp)) {
+    if (!STARK_PILOT && adv.loaded && (adv.dirtyModel || adv.dirtySoul || adv.dirtySkills || adv.dirtyToolsets)) {
       try {
         const res = await applyAdvancedConfig(bot.name, adv)
         const failed = Object.entries(res?.applied || {}).filter(([, ok]) => !ok)
@@ -2531,11 +1927,7 @@ function EditProfileDialog({ bot, open, onClose }) {
     open,
     onOpenChange: value => !value && !busy && onClose(),
     children: jsxs(DialogContent, {
-      className: advanced ? 'max-w-3xl' : 'max-w-sm',
-      // Same resizable-window treatment as the create dialog.
-      style: advanced
-        ? { resize: 'both', overflow: 'auto', minWidth: 420, minHeight: 360, maxWidth: '95vw', maxHeight: '90vh' }
-        : undefined,
+      className: advanced ? 'max-w-2xl' : 'max-w-sm',
       children: [
         jsxs(DialogHeader, {
           children: [
@@ -2567,26 +1959,30 @@ function EditProfileDialog({ bot, open, onClose }) {
                 onChange: event => setTitle(event.target.value)
               })
             ),
-            labeled(
-              'Description',
-              jsx(Textarea, {
-                className: 'min-h-16',
-                placeholder: 'What should this agent help with?',
-                value: description,
-                onChange: event => setDescription(event.target.value)
-              })
-            ),
-            jsxs('button', {
-              type: 'button',
-              className:
-                'flex items-center gap-1 text-xs font-medium text-(--ui-text-tertiary) hover:text-(--ui-text-secondary)',
-              onClick: () => setAdvanced(v => !v),
-              children: [
-                jsx(Codicon, { name: advanced ? 'chevron-down' : 'chevron-right', className: 'text-[0.8rem]' }),
-                'Advanced — model, skills, toolsets, SOUL.md'
-              ]
-            }),
-            advanced
+            STARK_PILOT
+              ? null
+              : labeled(
+                  'Description',
+                  jsx(Textarea, {
+                    className: 'min-h-16',
+                    placeholder: 'What should this agent help with?',
+                    value: description,
+                    onChange: event => setDescription(event.target.value)
+                  })
+                ),
+            STARK_PILOT
+              ? null
+              : jsxs('button', {
+                  type: 'button',
+                  className:
+                    'flex items-center gap-1 text-xs font-medium text-(--ui-text-tertiary) hover:text-(--ui-text-secondary)',
+                  onClick: () => setAdvanced(v => !v),
+                  children: [
+                    jsx(Codicon, { name: advanced ? 'chevron-down' : 'chevron-right', className: 'text-[0.8rem]' }),
+                    'Advanced — model, skills, toolsets, SOUL.md'
+                  ]
+                }),
+            !STARK_PILOT && advanced
               ? jsx('div', {
                   className: 'rounded-md border border-(--ui-stroke-secondary) p-3',
                   children: jsx(AdvancedProfileConfig, { bot: bot.name, state: adv, setState: setAdv })
@@ -2609,10 +2005,6 @@ function EditProfileDialog({ bot, open, onClose }) {
 
 function CreateAgentDialog({ open, onClose, roster }) {
   const [name, setName] = useState('')
-  // Create mode: the profile doesn't exist yet, so per-profile MCP credential
-  // setup can't target it — the row shows a "save the agent first" hint and
-  // the live setup UI lives in Edit Profile (where bot.name exists).
-  const setupProfile = null
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [shape, setShape] = useState('circle')
@@ -2624,12 +2016,6 @@ function CreateAgentDialog({ open, onClose, roster }) {
   const [provider, setProvider] = useState('')
   const [soul, setSoul] = useState('')
   const [noSkills, setNoSkills] = useState(false)
-  const [shareAuth, setShareAuth] = useState(true)
-  const [advTab, setAdvTab] = useState('general')
-  const [caps, setCaps] = useState(null)
-  const [capsFailed, setCapsFailed] = useState(false)
-  const [dirtyCaps, setDirtyCaps] = useState({ skills: false, toolsets: false, mcp: false })
-  const [capFilter, setCapFilter] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
 
@@ -2650,62 +2036,8 @@ function CreateAgentDialog({ open, onClose, roster }) {
     setProvider('')
     setSoul('')
     setNoSkills(false)
-    setShareAuth(true)
-    setAdvTab('general')
-    setCaps(null)
-    setCapsFailed(false)
-    setDirtyCaps({ skills: false, toolsets: false, mcp: false })
-    setCapFilter('')
     setBusy(false)
     setError(null)
-  }
-
-  // Capability catalog for the tabs: the profile doesn't exist yet, so show
-  // what it WILL have — the clone source's catalog, else the main profile's.
-  const capSource = cloneFrom === '__none__' ? 'default' : cloneFrom
-  const ensureCaps = () => {
-    if ((caps && caps.source === capSource) || capsFailed) {
-      return
-    }
-
-    Promise.all([
-      host.request('profiles.describe', { name: capSource }),
-      host.request('mcp.catalog', {}).catch(() => null)
-    ])
-      .then(([res, cat]) => {
-        // Full MCP menu = the profile's configured servers + the bundled
-        // catalog (installable). Configured entries win on name clash.
-        const configured = res.mcp_servers || []
-        const have = new Set(configured.map(m => m.name))
-        const catalog = ((cat && cat.servers) || []).filter(s => !have.has(s.name))
-
-        setCaps({
-          source: capSource,
-          skills: res.skills || [],
-          toolsets: res.toolsets || [],
-          mcp: [
-            ...configured,
-            ...catalog.map(s => ({
-              name: s.name,
-              enabled: false,
-              fromCatalog: true,
-              installed: s.installed,
-              requires: s.requires || [],
-              description: s.description || ''
-            }))
-          ]
-        })
-      })
-      .catch(() => setCapsFailed(true))
-  }
-
-  const toggleCap = (kind, name, enabled) => {
-    setDirtyCaps(prev => ({ ...prev, [kind === 'mcp' ? 'mcp' : kind]: true }))
-    setCaps(prev =>
-      prev
-        ? { ...prev, [kind]: prev[kind].map(x => (x.name === name ? { ...x, enabled } : x)) }
-        : prev
-    )
   }
 
   const submit = async () => {
@@ -2724,36 +2056,9 @@ function CreateAgentDialog({ open, onClose, roster }) {
         description: descriptionText,
         clone_from: cloneFrom === '__none__' ? null : cloneFrom,
         no_skills: noSkills,
-        // Shared (not copied) auth keeps ONE OAuth/token pool with the main
-        // profile, so refreshes can't invalidate each other. Older gateways
-        // ignore the param and copy — still functional, just forked.
-        share_auth: shareAuth,
         soul: composeSoul({ name: slug, title, description, roster, customSoul: soul }),
         ...(model.trim() && provider.trim() ? { model: model.trim(), provider: provider.trim() } : {})
       })
-
-      // Apply capability picks from the Advanced tabs (best-effort; the
-      // profile exists either way and Edit Profile can finish the job).
-      try {
-        const capPayload = {}
-
-        if (dirtyCaps.skills && caps) {
-          capPayload.disabled_skills = caps.skills.filter(s => !s.enabled).map(s => s.name)
-        }
-        if (dirtyCaps.toolsets && caps) {
-          const en = caps.toolsets.filter(t => t.enabled)
-          capPayload.enabled_toolsets =
-            en.length === caps.toolsets.length || en.length === 0 ? [] : en.map(t => t.name)
-        }
-        if (dirtyCaps.mcp && caps) {
-          capPayload.enabled_mcp_servers = caps.mcp.filter(m => m.enabled).map(m => m.name)
-        }
-        if (Object.keys(capPayload).length) {
-          await host.request('profiles.configure', { name: slug, ...capPayload })
-        }
-      } catch {
-        /* capability application is best-effort */
-      }
 
       saveBotMeta(slug, { shape, color, image, title: title.trim(), created: Date.now() })
       queryClient.invalidateQueries({ queryKey: ROSTER_KEY })
@@ -2791,13 +2096,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
       }
     },
     children: jsxs(DialogContent, {
-      className: advanced ? 'max-w-3xl' : 'max-w-md',
-      // Native resize handle (bottom-right corner): the dialog becomes a
-      // window the user can grow/shrink. overflow:auto is required for CSS
-      // resize to engage; caps keep it on screen.
-      style: advanced
-        ? { resize: 'both', overflow: 'auto', minWidth: 420, minHeight: 360, maxWidth: '95vw', maxHeight: '90vh' }
-        : undefined,
+      className: advanced ? 'max-w-xl' : 'max-w-md',
       children: [
         jsxs(DialogHeader, {
           children: [
@@ -2859,14 +2158,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
               type: 'button',
               className:
                 'flex items-center gap-1 text-xs font-medium text-(--ui-text-tertiary) hover:text-(--ui-text-secondary)',
-              onClick: () => {
-                setAdvanced(v => {
-                  if (!v) {
-                    ensureCaps()
-                  }
-                  return !v
-                })
-              },
+              onClick: () => setAdvanced(v => !v),
               children: [
                 jsx(Codicon, { name: advanced ? 'chevron-down' : 'chevron-right', className: 'text-[0.8rem]' }),
                 'Advanced'
@@ -2874,264 +2166,64 @@ function CreateAgentDialog({ open, onClose, roster }) {
             }),
             advanced
               ? jsxs('div', {
-                  className: 'grid gap-3 rounded-md border border-(--ui-stroke-secondary) p-3',
+                  className: 'grid gap-3.5 rounded-md border border-(--ui-stroke-secondary) p-3',
                   children: [
-                    jsx('div', {
-                      className: 'flex gap-1',
-                      children: [
-                        ['general', 'General'],
-                        ['skills', 'Skills'],
-                        ['toolsets', 'Tools'],
-                        ['mcp', 'MCP']
-                      ].map(([id, label]) =>
-                        jsx(
-                          'button',
-                          {
-                            type: 'button',
-                            className: cn(
-                              'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
-                              advTab === id
-                                ? 'bg-(--chrome-action-hover) text-(--ui-text-primary)'
-                                : 'text-(--ui-text-tertiary) hover:text-(--ui-text-secondary)'
-                            ),
-                            onClick: () => {
-                              setAdvTab(id)
-                              setCapFilter('')
-                              if (id !== 'general') {
-                                ensureCaps()
-                              }
-                            },
-                            children: label
-                          },
-                          id
-                        )
-                      )
-                    }),
-                    advTab === 'general'
-                      ? jsxs('div', {
-                          className: 'grid gap-3.5',
-                          children: [
-                            labeled(
-                              'Clone from profile',
-                              jsxs(Select, {
-                                value: cloneFrom,
-                                onValueChange: value => {
-                                  setCloneFrom(value)
-                                  setCaps(null)
-                                  setCapsFailed(false)
-                                },
-                                children: [
-                                  jsx(SelectTrigger, {
-                                    className: 'h-8 rounded-md',
-                                    children: jsx(SelectValue, {})
-                                  }),
-                                  jsxs(SelectContent, {
-                                    children: [
-                                      jsx(SelectItem, {
-                                        value: '__none__',
-                                        children: 'Fresh profile (bundled skills)'
-                                      }),
-                                      ...roster.map(b => jsx(SelectItem, { value: b.name, children: b.name }, b.name))
-                                    ]
-                                  })
-                                ]
-                              })
-                            ),
-                            jsx(ModelPicker, {
-                              value: { provider, model },
-                              onChange: patch => {
-                                if ('provider' in patch) {
-                                  setProvider(patch.provider)
-                                }
-                                if ('model' in patch) {
-                                  setModel(patch.model)
-                                }
-                              },
-                              placeholderModel: 'inherited from launch profile'
-                            }),
-                            labeled(
-                              'SOUL.md (optional — replaces the generated persona)',
-                              jsx(Textarea, {
-                                className: 'min-h-24 font-mono text-xs leading-5',
-                                placeholder:
-                                  'Leave blank to auto-generate from name/title/description + agent-messaging roster.',
-                                value: soul,
-                                onChange: event => setSoul(event.target.value)
-                              })
-                            ),
-                            jsxs('label', {
-                              className: 'flex items-center gap-2 text-xs text-(--ui-text-secondary)',
-                              children: [
-                                jsx(Checkbox, {
-                                  checked: shareAuth,
-                                  onCheckedChange: value => setShareAuth(Boolean(value))
-                                }),
-                                'Share keys & accounts with the main profile'
-                              ]
-                            }),
-                            jsx('div', {
-                              className: 'pl-6 pt-0.5 text-[0.7rem] leading-5 text-(--ui-text-tertiary)',
-                              children:
-                                'Subscriptions, OAuth logins, and API keys stay shared (not copied), so token refreshes never invalidate each other. Uncheck for an isolated snapshot copy.'
-                            }),
-                            jsxs('label', {
-                              className: 'flex items-center gap-2 text-xs text-(--ui-text-secondary)',
-                              children: [
-                                jsx(Checkbox, {
-                                  checked: noSkills,
-                                  onCheckedChange: value => setNoSkills(Boolean(value))
-                                }),
-                                'Create empty (skip bundled skills)'
-                              ]
-                            })
-                          ]
-                        })
-                      : capsFailed
-                        ? jsx('div', {
-                            className: 'px-2 py-3 text-center text-xs text-(--ui-text-tertiary)',
-                            children:
-                              'Capability catalog needs a newer gateway (restart it after updating Hermes).'
+                    labeled(
+                      'Clone from profile',
+                      jsxs(Select, {
+                        value: cloneFrom,
+                        onValueChange: setCloneFrom,
+                        children: [
+                          jsx(SelectTrigger, {
+                            className: 'h-8 rounded-md',
+                            children: jsx(SelectValue, {})
+                          }),
+                          jsxs(SelectContent, {
+                            children: [
+                              jsx(SelectItem, { value: '__none__', children: 'Fresh profile (bundled skills)' }),
+                              ...roster.map(b => jsx(SelectItem, { value: b.name, children: b.name }, b.name))
+                            ]
                           })
-                        : !caps
-                          ? jsx('div', {
-                              className: 'flex justify-center py-4',
-                              children: jsx(GlyphSpinner, {
-                                spinner: 'breathe',
-                                className: 'text-(--ui-text-tertiary)'
-                              })
-                            })
-                          : advTab === 'skills'
-                            ? noSkills
-                              ? jsx('div', {
-                                  className: 'px-2 py-3 text-center text-xs text-(--ui-text-tertiary)',
-                                  children: '“Create empty” is checked — no bundled skills will be installed.'
-                                })
-                              : jsxs('div', {
-                                  className: 'grid gap-1.5',
-                                  children: [
-                                    jsx(Input, {
-                                      className: 'h-7 text-xs',
-                                      placeholder: 'Filter skills…',
-                                      value: capFilter,
-                                      onChange: event => setCapFilter(event.target.value)
-                                    }),
-                                    jsx(ScrollArea, {
-                                      style: { maxHeight: 200 },
-                                      children: jsx(CheckList, {
-                                        items: capFilter.trim()
-                                          ? caps.skills.filter(s =>
-                                              s.name.toLowerCase().includes(capFilter.trim().toLowerCase())
-                                            )
-                                          : caps.skills,
-                                        onToggle: (name, enabled) => toggleCap('skills', name, enabled),
-                                        columns: 2
-                                      })
-                                    }),
-                                    jsx('div', {
-                                      className: 'text-[0.65rem] leading-4 text-(--ui-text-quaternary)',
-                                      children: `Catalog from ${caps.source} — unchecked skills are disabled after creation.`
-                                    }),
-                                    jsx(HubSkillsSection, {
-                                      forProfile: null,
-                                      onInstalled: name =>
-                                        setCaps(prev =>
-                                          !prev || prev.skills.some(s => s.name === name)
-                                            ? prev
-                                            : { ...prev, skills: [...prev.skills, { name, enabled: true }] }
-                                        )
-                                    })
-                                  ]
-                                })
-                            : advTab === 'toolsets'
-                              ? jsxs('div', {
-                                  className: 'grid gap-1.5',
-                                  children: [
-                                    jsx(ScrollArea, {
-                                      style: { maxHeight: 200 },
-                                      children: jsx(CheckList, {
-                                        items: caps.toolsets,
-                                        onToggle: (name, enabled) => toggleCap('toolsets', name, enabled),
-                                        columns: 2
-                                      })
-                                    }),
-                                    jsx('div', {
-                                      className: 'text-[0.65rem] leading-4 text-(--ui-text-quaternary)',
-                                      children: 'Leaving all (or none) checked keeps the default toolset behavior.'
-                                    })
-                                  ]
-                                })
-                              : caps.mcp.length === 0
-                                ? jsx('div', {
-                                    className: 'px-2 py-3 text-center text-xs text-(--ui-text-tertiary)',
-                                    children: 'No MCP servers configured or in the catalog.'
-                                  })
-                                : jsxs('div', {
-                                    className: 'grid gap-1.5',
-                                    children: [
-                                      jsx(ScrollArea, {
-                                        style: { maxHeight: 200 },
-                                        children: jsx('div', {
-                                          className: 'grid gap-1',
-                                          children: caps.mcp.map(m => {
-                                            const needsSetup =
-                                              m.fromCatalog && !m.installed && (m.requires || []).length > 0
-
-                                            return jsxs(
-                                              'label',
-                                              {
-                                                className: 'flex items-start gap-2 text-xs text-(--ui-text-secondary)',
-                                                children: [
-                                                  jsx(Checkbox, {
-                                                    checked: !!m.enabled,
-                                                    disabled: needsSetup,
-                                                    onCheckedChange: value => toggleCap('mcp', m.name, Boolean(value))
-                                                  }),
-                                                  jsxs('span', {
-                                                    className: 'min-w-0',
-                                                    children: [
-                                                      jsx('span', { children: m.name }),
-                                                      m.fromCatalog
-                                                        ? jsx('span', {
-                                                            className: 'ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)',
-                                                            children: needsSetup
-                                                              ? (setupProfile
-                                                                  ? null
-                                                                  : 'needs setup (' + (m.requires || []).join(', ') + ') — save the agent first, then set up here')
-                                                              : m.installed
-                                                                ? 'catalog · installed'
-                                                                : 'catalog'
-                                                          })
-                                                        : null,
-                                                      needsSetup && setupProfile
-                                                        ? jsx(McpSetupButton, {
-                                                            profile: setupProfile,
-                                                            entry: m,
-                                                            onDone: () => toggleCap('mcp', m.name, true)
-                                                          })
-                                                        : null,
-                                                      m.description
-                                                        ? jsx('div', {
-                                                            className:
-                                                              'truncate text-[0.65rem] leading-4 text-(--ui-text-quaternary)',
-                                                            children: m.description
-                                                          })
-                                                        : null
-                                                    ]
-                                                  })
-                                                ]
-                                              },
-                                              m.name
-                                            )
-                                          })
-                                        })
-                                      }),
-                                      jsx('div', {
-                                        className: 'text-[0.65rem] leading-4 text-(--ui-text-quaternary)',
-                                        children:
-                                          'Configured servers copy from the main profile; catalog entries are the bundled MCP menu. Entries needing API keys route through setup first (credentials follow the shared keys setting).'
-                                      })
-                                    ]
-                                  })
+                        ]
+                      })
+                    ),
+                    jsx(ModelPicker, {
+                      value: { provider, model },
+                      onChange: patch => {
+                        if ('provider' in patch) {
+                          setProvider(patch.provider)
+                        }
+                        if ('model' in patch) {
+                          setModel(patch.model)
+                        }
+                      },
+                      placeholderModel: 'inherited from launch profile'
+                    }),
+                    labeled(
+                      'SOUL.md (optional — replaces the generated persona)',
+                      jsx(Textarea, {
+                        className: 'min-h-24 font-mono text-xs leading-5',
+                        placeholder:
+                          'Leave blank to auto-generate from name/title/description + agent-messaging roster.',
+                        value: soul,
+                        onChange: event => setSoul(event.target.value)
+                      })
+                    ),
+                    jsxs('label', {
+                      className: 'flex items-center gap-2 text-xs text-(--ui-text-secondary)',
+                      children: [
+                        jsx(Checkbox, {
+                          checked: noSkills,
+                          onCheckedChange: value => setNoSkills(Boolean(value))
+                        }),
+                        'Create empty (skip bundled skills)'
+                      ]
+                    }),
+                    jsx('div', {
+                      className: 'text-[0.65rem] leading-4 text-(--ui-text-quaternary)',
+                      children:
+                        'Per-skill and per-toolset selection lives in right-click → Edit Profile → Advanced once the agent exists (skills are installed during creation).'
+                    })
                   ]
                 })
               : null,
@@ -3196,6 +2288,10 @@ function normalizedProfileName(profile) {
   return typeof profile === 'string' ? profile.trim().toLowerCase() : ''
 }
 
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\"'\"'")}'`
+}
+
 function routinePrompt(bot, title, instruction, activeProfile) {
   if (normalizedProfileName(bot) && normalizedProfileName(bot) === normalizedProfileName(activeProfile)) {
     return instruction
@@ -3204,7 +2300,7 @@ function routinePrompt(bot, title, instruction, activeProfile) {
   return (
     `You are running the scheduled routine "${title}" for agent '${bot}'. ` +
     `Execute it AS that agent so the run lands in its own history: run this in the terminal and relay the output:\n\n` +
-    `hermes -p ${bot} chat -c "Routine: ${title}" -q ${JSON.stringify(`[Scheduled routine] ${instruction}`)}\n\n` +
+    `hermes -p ${shellQuote(bot)} chat -c ${shellQuote(`Routine: ${title}`)} -q ${shellQuote(`[Scheduled routine] ${instruction}`)}\n\n` +
     `If the command fails, report the error instead.`
   )
 }
@@ -3781,45 +2877,20 @@ function BotsPane() {
 
     return Math.max(created, lastMsg)
   }
-  // Pinned bots (right-click → Pin) float to the top as a group; within the
-  // pinned group and within the unpinned group, recency still rules. A
-  // plain boolean flag in bot-meta (rides ui_meta to every machine).
-  const isPinned = bot => Boolean(allMeta[bot.name]?.pinned)
   // Resilience (@wesleysimplicio, #13): a failed refresh must not erase a
   // roster the user already had — mixed local+cloud gateways and remotes
   // waking from sleep fail transiently. Render the last good snapshot with
   // a notice; the full error card is reserved for "never had a roster".
   const live = Array.isArray(data?.profiles) ? data.profiles : null
   const source = live ?? (error ? $lastRoster.get() : [])
-  const roster = source.slice().sort((a, b) => {
-    const pa = isPinned(a) ? 1 : 0
-    const pb = isPinned(b) ? 1 : 0
-
-    if (pa !== pb) {
-      return pb - pa
-    }
-
-    return activityOf(b) - activityOf(a)
-  })
+  const roster = source.slice().sort((a, b) => activityOf(b) - activityOf(a))
 
   if (live) {
+    recordRosterStatus(live)
     $lastRoster.set(roster)
     mergeServerMeta(live)
     pullServerAvatars(live)
     trackInboundActivity(live)
-
-    // Pre-dial each bot's gateway socket so the first click doesn't pay
-    // the backend spawn + connect cost (SDK door from hermes-agent#85954;
-    // feature-detected — absent on older desktops, harmless to skip).
-    if (typeof host.warmProfile === 'function') {
-      for (const bot of live) {
-        try {
-          host.warmProfile(bot.name)
-        } catch {
-          /* warm is best-effort */
-        }
-      }
-    }
   }
 
   const staleNotice = error && !live && roster.length
@@ -3836,16 +2907,18 @@ function BotsPane() {
             className: 'text-[0.6875rem] font-semibold uppercase tracking-wider text-(--ui-text-quaternary)',
             children: 'Bots'
           }),
-          jsx(Tip, {
-            label: 'New Agent',
-            children: jsx('button', {
-              type: 'button',
-              className:
-                'flex size-6 items-center justify-center rounded-md text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
-              onClick: () => setCreateOpen(true),
-              children: jsx(Codicon, { name: 'add' })
-            })
-          })
+          STARK_PILOT
+            ? null
+            : jsx(Tip, {
+                label: 'New Agent',
+                children: jsx('button', {
+                  type: 'button',
+                  className:
+                    'flex size-6 items-center justify-center rounded-md text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
+                  onClick: () => setCreateOpen(true),
+                  children: jsx(Codicon, { name: 'add' })
+                })
+              })
         ]
       }),
       staleNotice
@@ -3881,32 +2954,36 @@ function BotsPane() {
             ? jsx(EmptyState, {
                 icon: 'hubot',
                 title: 'No agents yet',
-                description: 'Create your first teammate.'
+                description: STARK_PILOT ? 'No Hermes profiles are available.' : 'Create your first teammate.'
               })
             : jsx(ScrollArea, {
-                className: 'hermes-bots-roster min-h-0 flex-1',
+                className: 'min-h-0 flex-1',
                 children: jsx('div', {
-                  className: 'grid w-full min-w-0 gap-0.5 px-1.5 pb-2',
+                  className: 'grid gap-0.5 px-1.5 pb-2',
                   children: roster.map(bot => jsx(BotRow, { bot, onEdit: setEditing }, bot.name))
                 })
               }),
-      jsx('div', {
-        className: 'border-t border-(--ui-stroke-secondary) p-2',
-        children: jsxs(Button, {
-          className: 'w-full justify-center gap-1.5',
-          variant: 'secondary',
-          onClick: () => setCreateOpen(true),
-          children: [jsx(Codicon, { name: 'add' }), 'New Agent']
-        })
-      }),
-      jsx(CreateAgentDialog, {
-        open: createOpen,
-        onClose: () => {
-          setCreateOpen(false)
-          void refetch()
-        },
-        roster
-      }),
+      STARK_PILOT
+        ? null
+        : jsx('div', {
+            className: 'border-t border-(--ui-stroke-secondary) p-2',
+            children: jsxs(Button, {
+              className: 'w-full justify-center gap-1.5',
+              variant: 'secondary',
+              onClick: () => setCreateOpen(true),
+              children: [jsx(Codicon, { name: 'add' }), 'New Agent']
+            })
+          }),
+      STARK_PILOT
+        ? null
+        : jsx(CreateAgentDialog, {
+            open: createOpen,
+            onClose: () => {
+              setCreateOpen(false)
+              void refetch()
+            },
+            roster
+          }),
       jsx(EditProfileDialog, {
         bot: editing,
         open: Boolean(editing),
@@ -3923,9 +3000,27 @@ function BotsPane() {
 
 export default {
   id: ID,
-  name: 'Bots',
+  name: 'STARK Bots',
+  description: 'Visual-only roster for Jarvis and the STARK specialist profiles.',
   register(ctx) {
     pluginCtx = ctx
+
+    try {
+      Promise.resolve(
+        ctx.storage?.set?.('runtime-status', { build: STARK_PILOT_BUILD, mode: 'visual-only' })
+      ).catch(() => undefined)
+    } catch {
+      /* storage unavailable — registration continues */
+    }
+
+    try {
+      const rosterProbe = host.request?.('profiles.list', { include_sessions: true })
+      if (rosterProbe?.then) {
+        rosterProbe.then(result => recordRosterStatus(result?.profiles)).catch(() => undefined)
+      }
+    } catch {
+      /* gateway unavailable — the visible pane keeps its normal retry path */
+    }
 
     // Keyframes for the pet bob — injected because plugin classes aren't in
     // the app's precompiled CSS. Idempotent across hot reloads.
@@ -3943,7 +3038,7 @@ export default {
       Promise.resolve(ctx.storage?.get?.('bot-meta'))
         .then(value => {
           if (value && typeof value === 'object') {
-            $botMeta.set(value)
+            $botMeta.set(STARK_PILOT ? { ...STARK_BOT_META, ...value } : value)
           }
         })
         .catch(() => undefined)
@@ -3965,6 +3060,10 @@ export default {
       data: { placement: 'left', width: '260px' },
       render: () => jsx(BotsPane, {})
     })
+
+    if (STARK_PILOT) {
+      return
+    }
 
     // Routines — its OWN tiling pane splitting the workspace's right edge
     // (NOT the collapsible right sidebar; placement 'right' is that sidebar's
@@ -4004,33 +3103,6 @@ export default {
       data: {
         handler: async draft => {
           const text = draft.text || ''
-
-          // /new inside a bot's canonical forever-chat would fork the
-          // relationship into a scratch session — the one thing Bots mode
-          // promises never happens. Reroute to /compact (same felt effect:
-          // fresh working context, SAME conversation) and say so. Only
-          // guards the canonical chat: Sessions-mode scratchpads on the
-          // same profile keep full /new freedom.
-          const slashNew = /^\/(new|reset)\s*$/.exec(text.trim())
-
-          if (slashNew) {
-            const activeBot = $selectedBot.get()
-            const meta = activeBot ? $botMeta.get()[activeBot] : null
-            const pinnedId = meta?.chat_pin || null
-            const currentId = host.activeSessionId?.get?.() ?? null
-
-            if (activeBot && pinnedId && currentId && String(currentId) === String(pinnedId)) {
-              host.notify({
-                kind: 'info',
-                title: 'This chat never resets',
-                message:
-                  'Bot chats are one continuous conversation — compacting instead. ' +
-                  'For a throwaway session with this agent, use Sessions mode.'
-              })
-
-              return { ...draft, text: '/compact' }
-            }
-          }
 
           if (!/(^|\s)@[a-z0-9][a-z0-9_-]*/i.test(text)) {
             return draft
@@ -4074,9 +3146,9 @@ export default {
           const senderName = displayName({ name: active, title: activeMeta?.title }, activeMeta)
           const note =
             '\n\n[@mention handoff — for each mentioned agent (' + mentioned.map(botHandle).join(', ') + '): ' +
-            'COMPOSE a message from you (' + senderName + ') to that agent conveying what the user wants — do not forward this text verbatim. Send it with exactly one terminal call, run with background=true AND notify_on_complete=true (the recipient may take minutes; the user must not be blocked):\n' +
+            'COMPOSE a message from you (' + senderName + ') to that agent conveying what the user wants — do not forward this text verbatim. Send it with exactly one command:\n' +
             mentioned.map(n => '`hermes -p ' + n + ' chat --in ~ -c "Bot Chat" -Q -q "Message from \uD83E\uDD16 ' + senderName + ' (@' + botHandle(active) + '): <your composed message>"`').join('\n') +
-            '\nAfter dispatching, tell the user the message was sent and END YOUR TURN — do not wait or poll; when the background process completes, its notification carries the reply — relay it then, attributed to that agent. If it fails with "No session found matching \'Bot Chat\'", send once without the -c flag, then run `hermes -p <agent> sessions rename <session_id from the output> "Bot Chat"`. ' +
+            '\nIf it fails with "No session found matching \'Bot Chat\'", send once without the -c flag, then run `hermes -p <agent> sessions rename <session_id from the output> "Bot Chat"`. ' +
             'Relay the reply back to the user, attributed to that agent.]'
 
           return { ...draft, text: text + note }
