@@ -7,7 +7,7 @@ Ela preserva navegação, chat persistente, títulos e avatares.
 Selecionar um bot apenas abre uma sessão existente ou um rascunho vazio.
 O clique nunca envia prompt, mensagem ou ação ao perfil.
 
-O build `2026.08-pilot.6` apresenta Jarvis e 13 especialistas mitológicos humanizados.
+O build `2026.08-pilot.7` apresenta Jarvis futurista e 13 especialistas mitológicos humanizados.
 
 Os codinomes pertencem às tradições grega, egípcia e nórdica.
 
