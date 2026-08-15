@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-EXPECTED_SHA256="d36793e693ecc8da4ce7364424b48e19426d932bd29182d1464f299e5a56b9b7"
+EXPECTED_SHA256="e0807985e1e30fd2d247b263a6d4579edc181389431d7ce901253ca07db28b35"
 BUNDLE_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 SOURCE_PLUGIN="$BUNDLE_DIR/plugin.js"
 
@@ -48,7 +48,7 @@ if [[ "$INSTALLED_SHA256" != "$EXPECTED_SHA256" ]]; then
 fi
 
 printf 'status=installed\n'
-printf 'build=2026.08-pilot.6\n'
+printf 'build=2026.08-pilot.7\n'
 printf 'hermes_home=%s\n' "$HERMES_ROOT"
 printf 'plugin=%s\n' "$TARGET_DIR/plugin.js"
 printf 'sha256=%s\n' "$INSTALLED_SHA256"

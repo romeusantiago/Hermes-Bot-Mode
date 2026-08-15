@@ -1,121 +1,94 @@
-# Validação — STARK Bots Pilot
+# Validação — STARK Bots `2026.08-pilot.7`
 
-Data: 2026-08-15
+Data operacional: 2026-08-15.
 
 ## Resultado
 
-O build `2026.08-pilot.6` está instalado e carregado no Windows `desktop`.
+O build `2026.08-pilot.7` está instalado e carregado no Windows `desktop`.
 
-Os 13 avatares humanos de mitologia raiz estão ativos no Gateway.
+Jarvis usa o avatar futurista v1. Os 13 especialistas mantêm a coleção humana de mitologia raiz v4.
 
-Jarvis permanece com nome, perfil e identidade visual próprios.
+O plugin permanece estritamente `visual-only`.
 
 ## Build atual
 
-- Build: `2026.08-pilot.6`.
-- SHA-256: `d36793e693ecc8da4ce7364424b48e19426d932bd29182d1464f299e5a56b9b7`.
+- Build: `2026.08-pilot.7`.
+- SHA-256: `e0807985e1e30fd2d247b263a6d4579edc181389431d7ce901253ca07db28b35`.
 - Tamanho: 109.317 bytes.
 - Modo: `visual-only`.
-- Testes: 13 passaram e 0 falharam.
 - Sintaxe: `node --check plugin.js` passou.
+- Testes: 13 passaram e 0 falharam.
 
-## Coleção visual
+## Sistema visual
+
+### Jarvis
+
+- Perfil técnico: `default`.
+- Nome: `Jarvis`.
+- Papel: único orquestrador principal.
+- Estilo: humano, fotorrealista, futurista e não mitológico.
+- Asset: `/root/.hermes/assets/avatar.png`.
+- Dimensão: 768 × 768.
+- SHA-256: `36432d902e4b2eac478b6281212c5bd8e361b7edf88d01eeb4f7ac8730ef0055`.
+- Revisão: `36432d902e4b2eac`.
+- Backup anterior: `/root/.hermes/backups/avatar-jarvis-futuristic-20260815T074044Z`.
+
+### Especialistas
 
 - Conjunto: `STARK Mythic Root Human Agents v4`.
-- Especialistas: 13.
+- Perfis: 13.
+- IDs técnicos: preservados.
 - Formato ativo: PNG.
 - Dimensão: 768 × 768.
-- Menor arquivo: 357.145 bytes.
-- Maior arquivo: 634.195 bytes.
-- Total ativo: 6.271.272 bytes.
-- Jarvis alterado: não.
-- Manifesto: `/root/.hermes/persona-system/avatars-manifest.json`.
-- Rollback: `/root/.hermes/backups/avatar-mythic-root-20260815T050752Z`.
 
-Cada `avatar_revision` usa os 16 primeiros caracteres do SHA-256 do PNG.
+## Segurança comportamental
 
-## Proveniência
+Os testes cobrem:
 
-- Geração base: Pollinations, alias `flux`.
-- Modelo mapeado: `black-forest-labs/FLUX.1-schnell`.
-- Licença declarada do modelo: `Apache-2.0`.
-- Pós-processamento: molduras e sigilos autorais em Pillow.
-- Registro: `docs/personas/avatars-mythic-root-v4/PROVENANCE.md`.
+1. perfil sem histórico;
+2. perfil com histórico;
+3. pin válido;
+4. pin obsoleto;
+5. bloqueio de `prompt.submit`;
+6. registro somente do painel visual;
+7. roster com Jarvis e 13 especialistas;
+8. invalidação de cache por `avatar_revision`;
+9. seleção direta limitada.
 
-Os outputs permanecem sujeitos aos termos do serviço e à legislação aplicável.
+O clique não cria trabalho, não envia prompt e não atualiza metadados de perfil.
 
 ## Windows `desktop`
 
 - Plugin: `C:\Users\romeu\AppData\Local\Hermes\desktop-plugins\hermes-bots\plugin.js`.
-- Hash instalado: `d36793e693ecc8da4ce7364424b48e19426d932bd29182d1464f299e5a56b9b7`.
-- Hash anterior: `3b4022f3a0b3b4cedcf642da5856d1af5fed39dbfde8e10f8071c89c15c6e3e5`.
-- Rollback do plugin: cópia com o hash anterior no nome.
+- Hash instalado: `e0807985e1e30fd2d247b263a6d4579edc181389431d7ce901253ca07db28b35`.
+- Hash anterior: `d36793e693ecc8da4ce7364424b48e19426d932bd29182d1464f299e5a56b9b7`.
+- Rollback: cópia com o hash anterior no nome.
 - Processos Hermes após restart: 5.
-- Marcador `pilot.6` no storage: encontrado.
-- Revisões novas no cache: 13 de 13.
+- Marcador `pilot.7`: encontrado no storage Chromium.
+- Revisão `36432d902e4b2eac`: encontrada no storage Chromium.
+- Arquivos de storage examinados: 17.
 - Tarefa temporária após validação: ausente.
 - Scripts temporários após validação: 0.
 
-O restart ocorreu pela sessão interativa `ROMEU-PC\romeu`.
-
-## Runtime VPS
+## Gateway
 
 - `hermes-gateway.service`: ativo.
-- Perfis totais: 14.
-- Especialistas com avatar: 13 de 13.
-- Cópias verificadas por avatar: ativo, backup e pacote privado.
-- Cópias idênticas: 39 de 39.
+- `hermes profile list`: exit code 0.
+- Especialistas listados: 13 de 13.
+- O Desktop recebeu a nova revisão sem reinício do Gateway.
 
 ## Instalador macOS
 
-O instalador foi executado duas vezes em `HERMES_HOME` temporário.
+O instalador foi executado 2 vezes em `HERMES_HOME=/tmp/hermes-macos-pilot7-test`.
 
-As duas execuções terminaram com exit code 0.
+As 2 execuções terminaram com exit code 0.
 
-O hash instalado coincidiu com o `pilot.6`.
+O hash instalado coincidiu com o `pilot.7`.
 
 Não houve validação em um Mac real.
 
-## Segurança do piloto
+## Rollback
 
-Superfícies bloqueadas:
-
-- criação e duplicação de perfis;
-- edição avançada de perfil;
-- rotinas e `cronjobs`;
-- middleware de `@mentions`;
-- orquestração lateral;
-- `prompt.submit` ao selecionar um bot.
-
-Superfícies preservadas:
-
-- roster visual;
-- navegação entre perfis;
-- chat persistente;
-- títulos e avatares;
-- identidade visual dos 14 perfis.
-
-## Testes
-
-- `node --check plugin.js`: passou.
-- `node --test tests/*.test.mjs`: 13 passaram.
-- Testes falhos: 0.
-- Teste de cache: revisão alterada força download.
-- Seleção passiva: rascunho, histórico, pin válido e pin obsoleto.
-- Clique que envia prompt: 0 nos cenários testados.
-
-## Limitação
-
-O Windows OpenSSH não acessa a sessão gráfica para screenshot.
-
-A porta CDP `9222` permanece fechada.
-
-A prova visual final usa a prancha aprovada por Romeu.
-
-As 13 revisões persistem somente após cada download terminar com sucesso.
-
-## Próxima validação
-
-Validar o build em um Mac real quando o equipamento ficar disponível.
-
-Reexecutar os gates antes de qualquer mudança futura no piloto.
+- Avatar anterior do Jarvis: backup pré-instalação com checksums.
+- Plugin anterior: `plugin.js.rollback-d36793e693ecc8da4ce7364424b48e19426d932bd29182d1464f299e5a56b9b7`.
+- Especialistas v4: permaneceram inalterados.

@@ -1,12 +1,12 @@
 {
   "name": "hermes-bot-mode-stark-pilot",
   "mode": "visual-only",
-  "build": "2026.08-pilot.6",
+  "build": "2026.08-pilot.7",
   "upstream_repository": "https://github.com/NousResearch/Hermes-Bot-Mode",
   "fork_repository": "https://github.com/romeusantiago/Hermes-Bot-Mode",
   "upstream_commit": "ea9e559380549883ae6f53a0cf102f59a39712de",
-  "plugin_sha256": "d36793e693ecc8da4ce7364424b48e19426d932bd29182d1464f299e5a56b9b7",
-  "avatar_set": "STARK Mythic Root Human Agents v4",
+  "plugin_sha256": "e0807985e1e30fd2d247b263a6d4579edc181389431d7ce901253ca07db28b35",
+  "avatar_set": "Jarvis Futuristic v1 + STARK Mythic Root Human Agents v4",
   "applied_upstream_fixes": [
     "bb50741ff0e860671ad37106ab064dbd558f96c2",
     "c19ad7b065ff64753ba8806dbbd9eef58922238c"

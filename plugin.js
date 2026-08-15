@@ -65,7 +65,7 @@ const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 // STARK pilot: keep the profile roster and visual customization while
 // disabling lateral orchestration, scheduled execution, and profile creation.
 const STARK_PILOT = true
-const STARK_PILOT_BUILD = '2026.08-pilot.6'
+const STARK_PILOT_BUILD = '2026.08-pilot.7'
 
 const STARK_BOT_META = {
   default: { title: 'Jarvis', color: '#dc2626', shape: 'hexagon' },

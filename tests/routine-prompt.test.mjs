@@ -182,7 +182,7 @@ test('system: the STARK pilot registers only the visual Bots pane', () => {
   )
   assert.equal(writes.length, 1)
   assert.equal(writes[0][0], 'runtime-status')
-  assert.equal(writes[0][1].build, '2026.08-pilot.6')
+  assert.equal(writes[0][1].build, '2026.08-pilot.7')
   assert.equal(writes[0][1].mode, 'visual-only')
   runtime.__routines.recordRosterStatus([{ name: 'default' }, { name: 'dev' }])
   assert.equal(writes[1][0], 'roster-status-2')
