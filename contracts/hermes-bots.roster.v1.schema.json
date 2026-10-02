@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.jarvis.local/hermes-bots/hermes-bots.roster.v1.schema.json",
+  "title": "Hermes Bot Mode roster projection",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "mode", "provenance", "returned", "items"],
+  "properties": {
+    "schema": { "const": "hermes-bots.roster.v1" },
+    "mode": { "const": "read_only" },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "source_commit", "build"],
+      "properties": {
+        "source": { "const": "hermes-bots" },
+        "source_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "build": { "type": "string", "minLength": 1 }
+      }
+    },
+    "returned": { "type": "integer", "minimum": 0 },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "title", "description", "role", "last_session", "avatar_revision", "capabilities"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
+          "title": { "type": ["string", "null"], "maxLength": 128 },
+          "description": { "type": ["string", "null"], "maxLength": 512 },
+          "role": { "type": ["string", "null"], "maxLength": 128 },
+          "last_session": { "type": ["string", "null"], "maxLength": 128 },
+          "avatar_revision": { "type": ["string", "null"], "maxLength": 128 },
+          "capabilities": { "type": "object", "additionalProperties": { "type": "boolean" } }
+        }
+      }
+    }
+  }
+}
