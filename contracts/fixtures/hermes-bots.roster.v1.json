@@ -1,0 +1,30 @@
+{
+  "schema": "hermes-bots.roster.v1",
+  "mode": "read_only",
+  "provenance": {
+    "source": "hermes-bots",
+    "source_commit": "46c5ed9399b73d73a80377c2f8a240c6d4d86316",
+    "build": "2026.08-pilot.7"
+  },
+  "returned": 2,
+  "items": [
+    {
+      "name": "default",
+      "title": "Jarvis",
+      "description": "Orquestrador principal",
+      "role": "orchestration",
+      "last_session": null,
+      "avatar_revision": "pilot-7",
+      "capabilities": { "roster": true, "navigation": true, "chat": true }
+    },
+    {
+      "name": "research",
+      "title": "Thoth",
+      "description": "Pesquisa verificável",
+      "role": "research",
+      "last_session": null,
+      "avatar_revision": "pilot-7",
+      "capabilities": { "roster": true, "navigation": true, "chat": true }
+    }
+  ]
+}
